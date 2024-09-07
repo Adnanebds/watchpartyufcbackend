@@ -82,8 +82,8 @@ const transporter = nodemailer.createTransport({
   port: 587,
   secure: false,
   auth: {
-    user: 'watchpartyufc@outlook.com',
-    pass: 'jeYk5BRnpX_PR7A',
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS,
   },
   tls: {
     rejectUnauthorized: false
@@ -91,52 +91,40 @@ const transporter = nodemailer.createTransport({
 });
 
 const PDFDocument = require('pdfkit');
-const fs = require('fs');
+const { PassThrough } = require('stream');
 
 async function generateTicketPDF(ticket) {
   return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({
-      size: 'A4',
-      margin: 50
-    });
+    try {
+      const doc = new PDFDocument({
+        size: 'A4',
+        margin: 50
+      });
 
-    const filename = `ticket_${ticket._id}.pdf`;
-    const stream = fs.createWriteStream(filename);
+      const bufferStream = new PassThrough();
+      doc.pipe(bufferStream);
 
-    doc.pipe(stream);
+      doc
+        .fontSize(25)
+        .text('Event Ticket', 100, 80)
+        // Voeg andere PDF-inhoud hier toe
 
-    // Add content to the PDF
-    doc
-      .fontSize(25)
-      .text('Event Ticket', 100, 80);
+      doc.end();
 
-    doc
-      .fontSize(15)
-      .text(`Name: ${ticket.name}`, 100, 160)
-      .text(`Email: ${ticket.email}`, 100, 185)
-      .text(`Individual Tickets: ${ticket.individualCount}`, 100, 210)
-      .text(`Family Tickets: ${ticket.familyCount}`, 100, 235)
-      .text(`Total Cost: €${ticket.totalCost.toFixed(2)}`, 100, 260)
-      .text(`Ticket ID: ${ticket._id}`, 100, 285);
-
-    // Add a border
-    doc
-      .rect(50, 50, doc.page.width - 100, doc.page.height - 100)
-      .stroke();
-
-    doc.end();
-
-    stream.on('finish', () => {
-      resolve(filename);
-    });
-
-    stream.on('error', reject);
+      const chunks = [];
+      bufferStream.on('data', chunk => chunks.push(chunk));
+      bufferStream.on('end', () => resolve(Buffer.concat(chunks)));
+      bufferStream.on('error', err => reject(new Error(`Stream Error: ${err.message}`)));
+    } catch (error) {
+      reject(new Error(`PDF Generation Error: ${error.message}`));
+    }
   });
 }
 
-async function sendTicketEmail(ticket) {
-  const pdfFilename = await generateTicketPDF(ticket);
 
+async function sendTicketEmail(ticket) {
+  const pdfBuffer = await generateTicketPDF(ticket);
+  
   const mailOptions = {
     from: process.env.EMAIL_USER,
     to: ticket.email,
@@ -145,25 +133,36 @@ async function sendTicketEmail(ticket) {
     attachments: [
       {
         filename: 'event_ticket.pdf',
-        path: pdfFilename
+        content: pdfBuffer
       }
     ]
   };
-
+  
   try {
     await transporter.sendMail(mailOptions);
     console.log('Ticket email sent successfully');
-    fs.unlinkSync(pdfFilename); // Delete the temporary PDF file
-    return true;
   } catch (error) {
     console.error('Error sending ticket email:', error.message);
-    fs.unlinkSync(pdfFilename); // Ensure we delete the file even if sending fails
     throw error;
   }
 }
 
-app.post('/create-payment-intent', async (req, res) => {
-  const { amount, individualCount, familyCount, totalCost, email, name } = req.body;
+const { body, validationResult } = require('express-validator');
+
+app.post('/create-payment-intent', [
+  body('amount').isInt({ gt: 0 }).withMessage('Amount must be a positive integer'),
+  body('email').isEmail().withMessage('Invalid email format'),
+  body('name').isLength({ min: 1 }).withMessage('Name is required'),
+  body('individualCount').optional().isInt({ min: 0 }).withMessage('Individual count must be a non-negative integer'),
+  body('familyCount').optional().isInt({ min: 0 }).withMessage('Family count must be a non-negative integer'),
+  body('totalCost').isFloat({ gt: 0 }).withMessage('Total cost must be a positive number')
+], async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ errors: errors.array() });
+  }
+
+  const { amount, individualCount = 0, familyCount = 0, totalCost, email, name } = req.body;
 
   try {
     const paymentIntent = await stripe.paymentIntents.create({
@@ -189,6 +188,7 @@ app.post('/create-payment-intent', async (req, res) => {
     res.status(500).send({ error: 'Internal Server Error' });
   }
 });
+
 
 app.post('/send-email', async (req, res) => {
   const { paymentIntentId } = req.body;
