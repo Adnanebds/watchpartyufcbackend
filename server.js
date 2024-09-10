@@ -5,14 +5,20 @@ const mongoose = require('mongoose');
 const Ticket = require('./models/ticket');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const nodemailer = require('nodemailer');
+const { createClient } = require('redis');
 
 const app = express();
 const port = process.env.PORT || 5000;
 
+// Create Redis client
+const redisClient = createClient({
+  url: process.env.REDIS_URL || 'redis://localhost:6379'
+});
+redisClient.on('error', (err) => console.log('Redis Client Error', err));
 // Webhook endpoint (place this before other routes and middleware)
 app.post('/webhook', express.raw({type: 'application/json'}), async (req, res) => {
   const sig = req.headers['stripe-signature'];
-  const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET;
+  const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET_LOCAL;
 
   let event;
 
@@ -104,11 +110,34 @@ async function generateTicketPDF(ticket) {
       const bufferStream = new PassThrough();
       doc.pipe(bufferStream);
 
+      // Add dynamic content from the ticket
       doc
         .fontSize(25)
-        .text('Event Ticket', 100, 80)
-        // Voeg andere PDF-inhoud hier toe
+        .text('Event Ticket', { align: 'center' })
+        .moveDown();
 
+      doc
+        .fontSize(14)
+        .text(`Ticket ID: ${ticket.id}`, { align: 'left' })
+        .moveDown();
+
+      doc
+        .text(`Email: ${ticket.email}`, { align: 'left' })
+        .moveDown();
+
+      doc
+        .text(`Individual Tickets: ${ticket.individualCount}`, { align: 'left' })
+        .moveDown();
+
+      doc
+        .text(`Family Tickets: ${ticket.familyCount}`, { align: 'left' })
+        .moveDown();
+
+      doc
+        .text(`Total Cost: €${ticket.totalCost.toFixed(2)}`, { align: 'left' })
+        .moveDown();
+
+      // End the document
       doc.end();
 
       const chunks = [];
@@ -124,12 +153,12 @@ async function generateTicketPDF(ticket) {
 
 async function sendTicketEmail(ticket) {
   const pdfBuffer = await generateTicketPDF(ticket);
-  
+
   const mailOptions = {
     from: process.env.EMAIL_USER,
     to: ticket.email,
     subject: 'Your Event Ticket',
-    text: `Dear ${ticket.name},\n\nYour payment was successful! Please find your ticket attached to this email.\n\nThank you for your purchase! Enjoy the event!`,
+    text: `Your Ticket Nummer : ${ticket.id},\n\nYour payment was successful! Please find your ticket attached to this email.\n\nThank you for your purchase! Enjoy the event!`,
     attachments: [
       {
         filename: 'event_ticket.pdf',
@@ -137,7 +166,7 @@ async function sendTicketEmail(ticket) {
       }
     ]
   };
-  
+
   try {
     await transporter.sendMail(mailOptions);
     console.log('Ticket email sent successfully');
@@ -147,12 +176,13 @@ async function sendTicketEmail(ticket) {
   }
 }
 
+
 const { body, validationResult } = require('express-validator');
 
 app.post('/create-payment-intent', [
   body('amount').isInt({ gt: 0 }).withMessage('Amount must be a positive integer'),
   body('email').isEmail().withMessage('Invalid email format'),
-  body('name').isLength({ min: 1 }).withMessage('Name is required'),
+  // body('name').isLength({ min: 1 }).withMessage('Name is required'),
   body('individualCount').optional().isInt({ min: 0 }).withMessage('Individual count must be a non-negative integer'),
   body('familyCount').optional().isInt({ min: 0 }).withMessage('Family count must be a non-negative integer'),
   body('totalCost').isFloat({ gt: 0 }).withMessage('Total cost must be a positive number')
@@ -191,12 +221,13 @@ app.post('/create-payment-intent', [
 
 
 app.post('/send-email', async (req, res) => {
+  console.log('Request body:', req.body); // Add this line
   const { paymentIntentId } = req.body;
 
   try {
     const ticket = await Ticket.findOne({ paymentIntentId });
     if (ticket) {
-      await sendTicketEmail(ticket);
+      await sendTicketEmail(ticket); // Ensure sendTicketEmail can handle fullName
       res.json({ success: true });
     } else {
       console.log('Ticket not found for PaymentIntent ID:', paymentIntentId);
@@ -207,6 +238,22 @@ app.post('/send-email', async (req, res) => {
     res.status(500).json({ success: false, error: 'Internal server error' });
   }
 });
+
+app.get('/get-ticket/:paymentIntentId', async (req, res) => {
+  const { paymentIntentId } = req.params;
+  try {
+    const ticket = await Ticket.findOne({ paymentIntentId });
+    if (ticket) {
+      res.json(ticket);
+    } else {
+      res.status(404).json({ error: 'Ticket not found' });
+    }
+  } catch (error) {
+    console.error('Error retrieving ticket:', error.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);

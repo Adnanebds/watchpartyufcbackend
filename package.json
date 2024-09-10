@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "test2": "jest"
   },
   "keywords": [],
   "author": "",
@@ -19,7 +20,11 @@
     "nodemailer": "^6.9.14",
     "nodemon": "^3.1.4",
     "pdfkit": "^0.15.0",
+    "redis": "^4.7.0",
     "serverless-http": "^3.2.0",
     "stripe": "^16.9.0"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
   }
 }
